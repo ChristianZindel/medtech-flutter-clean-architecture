@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:ui';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:fl_chart/fl_chart.dart';
@@ -9,6 +10,8 @@ import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'suggestion_service.dart';
+import 'entry.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -66,52 +69,54 @@ class CalmCheckInApp extends StatelessWidget {
   }
 }
 
-class Entry {
-  final String date;
-  final int energy;
-  final int stress;
-  final double sleepHours;
-  final int mood;
-  final List<String> symptoms;
-  final List<String> actions;
-  final String notes;
-  final String updatedAt;
+class SuggestionCard extends StatelessWidget {
+  final String text;
+  final Color color;
+  final IconData icon;
 
-  Entry({
-    required this.date,
-    required this.energy,
-    required this.stress,
-    required this.sleepHours,
-    required this.mood,
-    required this.symptoms,
-    required this.actions,
-    required this.notes,
-    required this.updatedAt,
+  const SuggestionCard({
+    super.key,
+    required this.text,
+    required this.color,
+    required this.icon,
   });
 
-  Map<String, dynamic> toJson() => {
-        'date': date,
-        'energy': energy,
-        'stress': stress,
-        'sleepHours': sleepHours,
-        'mood': mood,
-        'symptoms': symptoms,
-        'actions': actions,
-        'notes': notes,
-        'updatedAt': updatedAt,
-      };
-
-  static Entry fromJson(Map<String, dynamic> m) => Entry(
-        date: m['date'] as String,
-        energy: (m['energy'] as num).toInt(),
-        stress: (m['stress'] as num).toInt(),
-        sleepHours: (m['sleepHours'] as num).toDouble(),
-        mood: (m['mood'] as num).toInt(),
-        symptoms: (m['symptoms'] as List).map((e) => e.toString()).toList(),
-        actions: (m['actions'] as List).map((e) => e.toString()).toList(),
-        notes: (m['notes'] ?? '').toString(),
-        updatedAt: (m['updatedAt'] ?? '').toString(),
-      );
+  @override
+  Widget build(BuildContext context) {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(20),
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+        child: Container(
+          padding: const EdgeInsets.all(20),
+          decoration: BoxDecoration(
+            color: color.withOpacity(0.15), // Transparenter Schimmer
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(
+              color: color.withOpacity(0.3),
+              width: 1.5,
+            ),
+          ),
+          child: Row(
+            children: [
+              Icon(icon, color: color, size: 30),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Text(
+                  text,
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w500,
+                    color: Colors.white,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class Storage {
@@ -120,9 +125,13 @@ class Storage {
   static Future<List<Entry>> load() async {
     final sp = await SharedPreferences.getInstance();
     final raw = sp.getString(_key);
-    if (raw == null || raw.trim().isEmpty) return [];
+    if (raw == null || raw.trim().isEmpty) {
+      return [];
+    }
     final decoded = jsonDecode(raw);
-    if (decoded is! List) return [];
+    if (decoded is! List) {
+      return [];
+    }
     final entries = decoded
         .whereType<Map>()
         .map((m) => Entry.fromJson(Map<String, dynamic>.from(m)))
@@ -147,22 +156,7 @@ int clampInt(int v, int min, int max) => v < min ? min : (v > max ? max : v);
 double clampDouble(double v, double min, double max) =>
     v < min ? min : (v > max ? max : v);
 
-int computeRiskScore(Entry e) {
-  final energyScore = (10 - clampInt(e.energy, 0, 10)) / 10.0;
-  final stressScore = clampInt(e.stress, 0, 10) / 10.0;
-  final sleepScore =
-      clampDouble((8 - clampDouble(e.sleepHours, 0, 14)) / 8.0, 0, 1);
-  final moodScore = (10 - clampInt(e.mood, 0, 10)) / 10.0;
 
-  final symptomBoost = (e.symptoms.length * 0.04);
-  final raw = (0.33 * energyScore) +
-      (0.33 * stressScore) +
-      (0.20 * sleepScore) +
-      (0.14 * moodScore) +
-      symptomBoost;
-
-  return (clampDouble(raw, 0, 1) * 100).round();
-}
 
 String todayIso() {
   final now = DateTime.now();
@@ -172,39 +166,6 @@ String todayIso() {
 String ddmm(String iso) {
   final dt = DateTime.parse(iso);
   return DateFormat('dd.MM').format(dt);
-}
-
-String gentleSuggestion(int score, Entry? latest) {
-  if (latest == null) return '';
-  final suggestions = <String>[];
-
-  if (latest.sleepHours < 6) {
-    suggestions.add('Achte heute auf bewusste Erholungspausen.');
-  }
-  if (latest.energy <= 3) {
-    suggestions
-        .add('Kleine Inseln ohne Reize (Handy weg) können den Akku stützen.');
-  }
-  if (latest.stress >= 7) {
-    suggestions.add('Versuche, kurz innezuhalten und tief durchzuatmen.');
-  }
-
-  if (score >= 75) {
-    return suggestions.isNotEmpty
-        ? suggestions.first
-        : 'Die aktuelle Belastung ist sehr hoch. Priorisiere deine Grundbedürfnisse und reduziere Anforderungen.';
-  }
-  if (score >= 50) {
-    return suggestions.isNotEmpty
-        ? suggestions.first
-        : 'Achte heute auf klare Grenzen und Mini-Pausen.';
-  }
-  if (score >= 30) {
-    return suggestions.isNotEmpty
-        ? suggestions.first
-        : 'Stabiler Tag – ein kurzer Moment der Selbstfürsorge hält das Level.';
-  }
-  return 'Guter Verlauf – behalte deine Routine bei, ohne Druck.';
 }
 
 const symptomsList = <Map<String, String>>[
@@ -250,6 +211,13 @@ class _HomeScreenState extends State<HomeScreen> {
   late TextEditingController _notesController;
   bool loading = true;
 
+   final SuggestionService _suggestionService = SuggestionService();
+
+  Entry? get latest => entries.isEmpty ? null : entries.last;
+  int get latestScore => latest == null ? 0 : latest!.calculateRiskScore();
+  String get suggestion => _suggestionService.getSuggestion(latestScore, latest);
+
+
   @override
   void initState() {
     super.initState();
@@ -265,6 +233,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _load() async {
     final loaded = await Storage.load();
+    if (!mounted) {
+      return;
+    }
     setState(() {
       entries = loaded;
       loading = false;
@@ -300,11 +271,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  Entry? get latest => entries.isEmpty ? null : entries.last;
-  int get latestScore => latest == null ? 0 : computeRiskScore(latest!);
-  String get suggestion => gentleSuggestion(latestScore, latest);
-
-  bool get hasEntryForSelected => entries.any((e) => e.date == selectedDate);
+    bool get hasEntryForSelected => entries.any((e) => e.date == selectedDate);
 
   Future<void> saveEntry() async {
     final newEntry = Entry(
@@ -326,14 +293,15 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() => entries = next);
     await Storage.save(next);
 
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-            content: Text(hasEntryForSelected
-                ? 'Eintrag aktualisiert.'
-                : 'Eintrag gespeichert.')),
-      );
+    if (!mounted) {
+      return;
     }
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+          content: Text(hasEntryForSelected
+              ? 'Eintrag aktualisiert.'
+              : 'Eintrag gespeichert.')),
+    );
   }
 
   Future<void> deleteEntry(String date) async {
@@ -364,23 +332,34 @@ class _HomeScreenState extends State<HomeScreen> {
     return file;
   }
 
-  Future<void> exportCSV() async {
-    if (entries.isEmpty) return;
+  Future<void> exportFilteredCSV(
+      {required List<Entry> dataToExport, required String reportName}) async {
+    if (dataToExport.isEmpty) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+            content: Text('Keine Einträge für diesen Zeitraum gefunden!'),
+            backgroundColor: Colors.orange),
+      );
+      return;
+    }
 
     final rows = <List<dynamic>>[
       [
-        'date',
-        'energy',
-        'stress',
-        'sleepHours',
-        'mood',
-        'symptoms',
-        'actions',
-        'notes'
+        'Datum',
+        'Energie',
+        'Stress',
+        'Schlaf',
+        'Stimmung',
+        'Symptome',
+        'Aktionen',
+        'Notizen'
       ]
     ];
 
-    for (final e in entries) {
+    for (final e in dataToExport) {
       rows.add([
         e.date,
         e.energy,
@@ -393,18 +372,26 @@ class _HomeScreenState extends State<HomeScreen> {
       ]);
     }
 
-    final csvString = rows.map((row) {
-      return row.map((item) {
-        final str = item.toString().replaceAll('"', '""');
-        return '"$str"';
-      }).join(',');
-    }).join('\n');
+    final csvString = rows
+        .map((row) => row
+            .map((item) => '"${item.toString().replaceAll('"', '""')}"')
+            .join(','))
+        .join('\n');
 
-    final file =
-        await _writeTempFile('calm-check-in-${todayIso()}.csv', csvString);
+    final file = await _writeTempFile('CalmCheckIn_$reportName.csv', csvString);
 
     await Share.shareXFiles([XFile(file.path)],
-        text: 'Calm Check-in – CSV Export');
+        subject: 'Mein $reportName',
+        text: 'Hier ist mein Calm Check-in Bericht für $reportName.');
+
+    if (!mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+          content: Text('$reportName erfolgreich exportiert!'),
+          backgroundColor: Colors.green),
+    );
   }
 
   Future<void> exportBackupJson() async {
@@ -427,19 +414,27 @@ class _HomeScreenState extends State<HomeScreen> {
       allowedExtensions: ['json'],
       withData: false,
     );
-    if (result == null || result.files.isEmpty) return;
+    if (result == null || result.files.isEmpty) {
+      return;
+    }
 
     final path = result.files.single.path;
-    if (path == null) return;
+    if (path == null) {
+      return;
+    }
 
     final file = File(path);
     final raw = await file.readAsString();
 
     final decoded = jsonDecode(raw);
-    if (decoded is! Map) throw Exception('Ungültiges Backup-Format.');
+    if (decoded is! Map) {
+      throw Exception('Ungültiges Backup-Format.');
+    }
 
     final ent = decoded['entries'];
-    if (ent is! List) throw Exception('Backup enthält keine Einträge.');
+    if (ent is! List) {
+      throw Exception('Backup enthält keine Einträge.');
+    }
 
     final restored = ent
         .whereType<Map>()
@@ -451,11 +446,12 @@ class _HomeScreenState extends State<HomeScreen> {
     await Storage.save(restored);
     _hydrateFormForDate(selectedDate);
 
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Backup importiert.')),
-      );
+    if (!mounted) {
+      return;
     }
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Backup importiert.')),
+    );
   }
 
   void showDisclaimer() {
@@ -485,7 +481,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final weeklyStats = weekly.isEmpty
         ? null
         : {
-            'risk': avgNum(weekly.map(computeRiskScore)),
+      'risk': avgNum(weekly.map((e) => e.calculateRiskScore())),
             'energy': avgNum(weekly.map((e) => e.energy)),
             'stress': avgNum(weekly.map((e) => e.stress)),
             'mood': avgNum(weekly.map((e) => e.mood)),
@@ -497,7 +493,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final chartSpots = <FlSpot>[];
     for (int i = 0; i < chartEntries.length; i++) {
       chartSpots.add(
-          FlSpot(i.toDouble(), computeRiskScore(chartEntries[i]).toDouble()));
+          FlSpot(i.toDouble(), chartEntries[i].calculateRiskScore().toDouble()));
     }
 
     return Scaffold(
@@ -531,34 +527,49 @@ class _HomeScreenState extends State<HomeScreen> {
           PopupMenuButton<String>(
             onSelected: (v) async {
               try {
-                if (v == 'csv') await exportCSV();
-                if (v == 'backup') await exportBackupJson();
-                if (v == 'restore') await restoreFromBackup();
+                if (v == 'csv') {
+                  await exportFilteredCSV(
+                    dataToExport: entries,
+                    reportName: 'Gesamtbericht',
+                  );
+                }
+                if (v == 'backup') {
+                  await exportBackupJson();
+                }
+                if (v == 'restore') {
+                  await restoreFromBackup();
+                }
                 if (v == 'clear') {
+                  if (!mounted) {
+                    return;
+                  }
                   final ok = await showDialog<bool>(
                     context: context,
-                    builder: (_) => AlertDialog(
+                    builder: (dialogContext) => AlertDialog(
                       title: const Text('Alles löschen?'),
                       content: const Text(
                           'Das entfernt alle Einträge aus diesem Gerät.'),
                       actions: [
                         TextButton(
-                            onPressed: () => Navigator.pop(context, false),
+                            onPressed: () => Navigator.pop(dialogContext, false),
                             child: const Text('Abbrechen')),
                         TextButton(
-                            onPressed: () => Navigator.pop(context, true),
+                            onPressed: () => Navigator.pop(dialogContext, true),
                             child: const Text('Löschen')),
                       ],
                     ),
                   );
-                  if (ok == true) await clearAll();
+                  if (ok == true) {
+                    await clearAll();
+                  }
                 }
               } catch (e) {
-                if (mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text('Fehler: $e')),
-                  );
+                if (!mounted) {
+                  return;
                 }
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text('Fehler: $e')),
+                );
               }
             },
             itemBuilder: (_) => const [
@@ -592,8 +603,8 @@ class _HomeScreenState extends State<HomeScreen> {
                           latestEntry == null
                               ? 'Noch keine Daten'
                               : 'Letzter Eintrag: ${latestEntry.date}',
-                          style:
-                              TextStyle(color: Colors.white.withOpacity(0.75)),
+                          style: TextStyle(
+                              color: Colors.white.withValues(alpha: 0.75)),
                         ),
                         const SizedBox(height: 12),
                         Row(
@@ -613,15 +624,15 @@ class _HomeScreenState extends State<HomeScreen> {
                           Container(
                             padding: const EdgeInsets.all(12),
                             decoration: BoxDecoration(
-                              color: Colors.black.withOpacity(0.18),
+                              color: Colors.black.withValues(alpha: 0.18),
                               borderRadius: BorderRadius.circular(16),
                               border: Border.all(
-                                  color: Colors.white.withOpacity(0.10)),
+                                  color: Colors.white.withValues(alpha: 0.10)),
                             ),
                             child: Text(
                               suggestion,
                               style: TextStyle(
-                                  color: Colors.white.withOpacity(0.85)),
+                                  color: Colors.white.withValues(alpha: 0.85)),
                             ),
                           ),
                         ],
@@ -645,7 +656,8 @@ class _HomeScreenState extends State<HomeScreen> {
                               ? Text(
                                   'Trage ein paar Tage ein, dann erscheint hier der Verlauf.',
                                   style: TextStyle(
-                                      color: Colors.white.withOpacity(0.75)))
+                                      color:
+                                          Colors.white.withValues(alpha: 0.75)))
                               : LineChart(
                                   LineChartData(
                                     minY: 0,
@@ -668,7 +680,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                             style: TextStyle(
                                                 fontSize: 10,
                                                 color: Colors.white
-                                                    .withOpacity(0.7)),
+                                                    .withValues(alpha: 0.7)),
                                           ),
                                         ),
                                       ),
@@ -682,14 +694,15 @@ class _HomeScreenState extends State<HomeScreen> {
                                           getTitlesWidget: (v, meta) {
                                             final idx = v.toInt();
                                             if (idx < 0 ||
-                                                idx >= chartEntries.length)
+                                                idx >= chartEntries.length) {
                                               return const SizedBox.shrink();
+                                            }
                                             return Text(
                                               ddmm(chartEntries[idx].date),
                                               style: TextStyle(
                                                   fontSize: 10,
                                                   color: Colors.white
-                                                      .withOpacity(0.7)),
+                                                      .withValues(alpha: 0.7)),
                                             );
                                           },
                                         ),
@@ -711,7 +724,7 @@ class _HomeScreenState extends State<HomeScreen> {
                           'Hinweis: Das ist kein Diagnose-Tool. Es hilft nur, Muster zu sehen.',
                           style: TextStyle(
                               fontSize: 12,
-                              color: Colors.white.withOpacity(0.6)),
+                              color: Colors.white.withValues(alpha: 0.6)),
                         ),
                       ],
                     ),
@@ -731,7 +744,7 @@ class _HomeScreenState extends State<HomeScreen> {
                           Text(
                               'Trage ein paar Tage ein, dann siehst du hier Trends.',
                               style: TextStyle(
-                                  color: Colors.white.withOpacity(0.75)))
+                                  color: Colors.white.withValues(alpha: 0.75)))
                         else
                           Column(
                             children: [
@@ -778,7 +791,9 @@ class _HomeScreenState extends State<HomeScreen> {
                                       );
                                     }).toList(),
                                     onChanged: (v) {
-                                      if (v == null) return;
+                                      if (v == null) {
+                                        return;
+                                      }
                                       setState(() => selectedDate = v);
                                       _hydrateFormForDate(v);
                                     },
@@ -882,18 +897,19 @@ class _HomeScreenState extends State<HomeScreen> {
                         if (entries.isEmpty)
                           Text('Noch keine Einträge.',
                               style: TextStyle(
-                                  color: Colors.white.withOpacity(0.75)))
+                                  color: Colors.white.withValues(alpha: 0.75)))
                         else
                           Column(
                             children: entries.reversed.take(12).map((e) {
-                              final r = computeRiskScore(e);
+                              final r = e.calculateRiskScore();
                               return ListTile(
                                 contentPadding: EdgeInsets.zero,
                                 title: Text(e.date),
                                 subtitle: Text(
                                     'Energie ${e.energy}/10 · Stress ${e.stress}/10 · Schlaf ${e.sleepHours}h',
                                     style: TextStyle(
-                                        color: Colors.white.withOpacity(0.7))),
+                                        color: Colors.white
+                                            .withValues(alpha: 0.7))),
                                 trailing: _RiskPill(score: r),
                                 onTap: () {
                                   setState(() => selectedDate = e.date);
@@ -911,7 +927,8 @@ class _HomeScreenState extends State<HomeScreen> {
                   child: Text(
                     'v1.0 · Calm Check-in · lokal gespeichert',
                     style: TextStyle(
-                        color: Colors.white.withOpacity(0.45), fontSize: 12),
+                        color: Colors.white.withValues(alpha: 0.45),
+                        fontSize: 12),
                   ),
                 ),
                 const SizedBox(height: 24),
@@ -933,7 +950,8 @@ class _HomeScreenState extends State<HomeScreen> {
         children: [
           Expanded(
               child: Text(label,
-                  style: TextStyle(color: Colors.white.withOpacity(0.75)))),
+                  style:
+                      TextStyle(color: Colors.white.withValues(alpha: 0.75)))),
           Text(value, style: const TextStyle(fontWeight: FontWeight.w600)),
         ],
       ),
@@ -951,7 +969,8 @@ class _HomeScreenState extends State<HomeScreen> {
             children: [
               Expanded(
                   child: Text(label,
-                      style: TextStyle(color: Colors.white.withOpacity(0.9)))),
+                      style: TextStyle(
+                          color: Colors.white.withValues(alpha: 0.9)))),
               Text('$value/10',
                   style: const TextStyle(fontWeight: FontWeight.w600)),
             ],
@@ -969,10 +988,12 @@ class _HomeScreenState extends State<HomeScreen> {
               children: [
                 Text(left,
                     style: TextStyle(
-                        fontSize: 11, color: Colors.white.withOpacity(0.55))),
+                        fontSize: 11,
+                        color: Colors.white.withValues(alpha: 0.55))),
                 Text(right,
                     style: TextStyle(
-                        fontSize: 11, color: Colors.white.withOpacity(0.55))),
+                        fontSize: 11,
+                        color: Colors.white.withValues(alpha: 0.55))),
               ],
             ),
         ],
@@ -992,7 +1013,8 @@ class _HomeScreenState extends State<HomeScreen> {
             children: [
               Expanded(
                   child: Text(label,
-                      style: TextStyle(color: Colors.white.withOpacity(0.9)))),
+                      style: TextStyle(
+                          color: Colors.white.withValues(alpha: 0.9)))),
               Text('${value.toStringAsFixed(1)}h',
                   style: const TextStyle(fontWeight: FontWeight.w600)),
             ],
@@ -1018,7 +1040,8 @@ class _HomeScreenState extends State<HomeScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(title, style: TextStyle(color: Colors.white.withOpacity(0.9))),
+        Text(title,
+            style: TextStyle(color: Colors.white.withValues(alpha: 0.9))),
         const SizedBox(height: 8),
         Wrap(
           spacing: 8,
@@ -1064,9 +1087,9 @@ class _RiskPill extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       decoration: BoxDecoration(
-        color: color.withOpacity(0.18),
+        color: color.withValues(alpha: 0.18),
         borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: color.withOpacity(0.6)),
+        border: Border.all(color: color.withValues(alpha: 0.6)),
       ),
       child: Text('$score · $text',
           style: TextStyle(color: color, fontWeight: FontWeight.w700)),
